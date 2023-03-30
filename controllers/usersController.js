@@ -2,11 +2,13 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const gravatar = require("gravatar");
 const Jimp = require("jimp");
+const { v4: uuidv4 } = require("uuid");
 
 const path = require("path");
 const fs = require("fs").promises;
 const RequestError = require("../helpers/RequestError");
 const User = require("../models/user");
+const sendConfirmEmail = require("../helpers/emailSender");
 
 const { TOKEN_PASS } = process.env;
 const avatarsStoragePath = path.join(__dirname, "../", "public", "avatars");
@@ -24,10 +26,20 @@ const register = async (req, res, next) => {
       s: "200",
     });
 
+    const verificationToken = uuidv4();
+
     const createdUser = await User.create({
       email,
       password: hashedPassword,
       avatarURL,
+      verificationToken,
+      verify: false,
+    });
+
+    await sendConfirmEmail({
+      to: email,
+      subject: "Confirm your email",
+      html: `<a href='http://localhost:3000/api/users/verify/${verificationToken}'>Click on the link to confirm the email</a>`,
     });
 
     res.status(201).json({
@@ -53,6 +65,10 @@ const login = async (req, res, next) => {
 
     if (!user || !isPasswordValid) {
       throw RequestError(401, `Email or password is wrong`);
+    }
+
+    if (!user.verify) {
+      throw RequestError(403, `The email is not confirmed`);
     }
 
     const payload = {
@@ -116,10 +132,51 @@ const updateAvatar = async (req, res, next) => {
   }
 };
 
+const confirmEmail = async (req, res, next) => {
+  try {
+    const { verificationToken } = req.params;
+    const result = await User.findOneAndUpdate(
+      { verificationToken },
+      { verificationToken: "", verify: true }
+    );
+    if (!result) {
+      throw RequestError(404, "Not Found");
+    }
+
+    res.status(200).json({ message: "Verification successful" });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resendConfirmation = async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+    if (!user) {
+      throw RequestError(404, "Not Found");
+    }
+    if (user.verify) {
+      throw RequestError(400, "Verification has already been passed");
+    }
+
+    await sendConfirmEmail({
+      to: email,
+      subject: "Confirm your email",
+      html: `<a href='http://localhost:3000/api/users/verify/${user.verificationToken}'>Click on the link to confirm the email</a>`,
+    });
+    res.status(200).json({ message: "Verification email sent" });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   register,
   login,
   logout,
   getCurrent,
   updateAvatar,
+  confirmEmail,
+  resendConfirmation,
 };
